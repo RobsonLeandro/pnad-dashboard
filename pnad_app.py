@@ -484,13 +484,12 @@ renda_media = df["Renda_Habitual"].dropna()
 renda_media = renda_media[renda_media > 0].mean()
 idade_media = df["Idade"].mean()
 horas_media = df["Horas_Semana"].dropna().mean()
-pct_formal  = (df["Carteira_Assinada"] == "Sim").sum() / max(len(df), 1) * 100
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("REGISTROS FILTRADOS", f"{len(df):,}".replace(",", "."))
 c2.metric("RENDA MÉDIA", f"R$ {renda_media:,.0f}".replace(",", ".") if pd.notna(renda_media) else "—")
 c3.metric("IDADE MÉDIA", f"{idade_media:.1f} anos" if pd.notna(idade_media) else "—")
-c4.metric("FORMALIDADE", f"{pct_formal:.1f}%" if pct_formal else "—")
+
 
 st.markdown("<br>", unsafe_allow_html=True)
 
