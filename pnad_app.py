@@ -150,6 +150,19 @@ html, body, [class*="css"] {
     border-top: 1px solid #2E2E4E;
     margin: 1rem 0;
 }
+
+/* Perfil sociodemográfico */
+.perfil-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #1A1A2E;
+    border-bottom: 2px solid #1A1A2E;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.8rem;
+    margin-top: 1.2rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -263,6 +276,83 @@ def valores_unicos(_con, coluna):
     return df.iloc[:, 0].dropna().tolist()
 
 # ─────────────────────────────────────────────────
+#  QUERY AGREGADA PARA PERFIL — evita carregar tudo
+# ─────────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def carregar_perfil(_con, filtros: dict, coluna: str) -> pd.DataFrame:
+    """Retorna distribuição de uma variável por período (Ano+Trimestre)."""
+    where = ["1=1"]
+    params = []
+
+    if filtros.get("anos"):
+        ph = ",".join("?" * len(filtros["anos"]))
+        where.append(f"Ano IN ({ph})")
+        params += filtros["anos"]
+
+    if filtros.get("trimestres"):
+        ph = ",".join("?" * len(filtros["trimestres"]))
+        where.append(f"Trimestre IN ({ph})")
+        params += filtros["trimestres"]
+
+    if filtros.get("sexos"):
+        ph = ",".join("?" * len(filtros["sexos"]))
+        where.append(f"V2007 IN ({ph})")
+        params += filtros["sexos"]
+
+    if filtros.get("racas"):
+        ph = ",".join("?" * len(filtros["racas"]))
+        where.append(f"V2010 IN ({ph})")
+        params += filtros["racas"]
+
+    if filtros.get("situacao") and filtros["situacao"] != "Todas":
+        where.append("V1022 = ?")
+        params.append(filtros["situacao"])
+
+    sql = f"""
+        SELECT
+            Ano || ' T' || Trimestre AS Periodo,
+            TRIM({coluna}) AS Categoria,
+            COUNT(*) AS N
+        FROM {TABELA}
+        WHERE {' AND '.join(where)}
+          AND {coluna} IS NOT NULL
+        GROUP BY Periodo, Categoria
+        ORDER BY Periodo, N DESC
+    """
+    return pd.read_sql(sql, _con, params=params)
+
+
+def montar_tabela_perfil(df_agg: pd.DataFrame) -> pd.DataFrame:
+    """Pivot: linhas = categoria, colunas = período, valores = N (%)."""
+    if df_agg.empty:
+        return pd.DataFrame()
+
+    periodos = df_agg["Periodo"].unique().tolist()
+    categorias = df_agg["Categoria"].unique().tolist()
+
+    totais = df_agg.groupby("Periodo")["N"].sum().to_dict()
+
+    pivot = {}
+    for _, row in df_agg.iterrows():
+        cat = row["Categoria"]
+        per = row["Periodo"]
+        n   = row["N"]
+        tot = totais.get(per, 1)
+        pct = n / tot * 100
+        pivot.setdefault(cat, {})[per] = f"{n:,}  ({pct:.1f}%)"
+
+    result = []
+    for cat in sorted(categorias, key=str):
+        linha = {"Categoria": cat}
+        for per in periodos:
+            linha[per] = pivot.get(cat, {}).get(per, "—")
+        result.append(linha)
+
+    return pd.DataFrame(result)
+
+
+# ─────────────────────────────────────────────────
 #  FUNÇÕES AUXILIARES
 # ─────────────────────────────────────────────────
 
@@ -274,13 +364,6 @@ def condicao_ocupacao(row):
     if pd.notna(renda) and renda > 0:
         return "Ocupada"
     return "Fora da força"
-
-def badge_condicao(val):
-    if val == "Ocupada":
-        return "🟢 Ocupada"
-    elif val == "Desocupada":
-        return "🟡 Desocupada"
-    return "⚪ Fora da força"
 
 # ─────────────────────────────────────────────────
 #  SIDEBAR — FILTROS
@@ -333,10 +416,10 @@ with st.sidebar:
 
     racas_disp = valores_unicos(con, "V2010")
     racas_sel  = st.multiselect(
-    "COR OU RAÇA",
-    options=racas_disp,
-    default=racas_disp
-)
+        "COR OU RAÇA",
+        options=racas_disp,
+        default=racas_disp
+    )
 
     st.markdown('<hr class="sidebar-divider">', unsafe_allow_html=True)
 
@@ -347,20 +430,26 @@ with st.sidebar:
     aplicar = st.button("Aplicar filtros")
 
 # ─────────────────────────────────────────────────
-#  CARREGAMENTO DOS DADOS
+#  MONTAGEM DOS FILTROS (compartilhados entre abas)
+# ─────────────────────────────────────────────────
+
+filtros = dict(
+    anos      = [str(a) for a in anos_sel],
+    trimestres= [str(t) for t in tri_sel],
+    sexos     = sexos_sel,
+    racas     = racas_sel,
+    situacao  = situacao_sel,
+)
+
+# ─────────────────────────────────────────────────
+#  CARREGAMENTO DOS DADOS (aba Registros)
 # ─────────────────────────────────────────────────
 
 if "df" not in st.session_state or aplicar:
-    filtros = dict(
-        anos      = [str(a) for a in anos_sel],
-        trimestres= [str(t) for t in tri_sel],
-        sexos     = sexos_sel,
-        racas     = racas_sel,
-        situacao  = situacao_sel,
-    )
     with st.spinner("Carregando dados..."):
         df = carregar_dados(con, filtros)
     st.session_state["df"] = df
+    st.session_state["filtros_ativos"] = filtros
 else:
     df = st.session_state["df"]
 
@@ -409,7 +498,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 #  ABAS
 # ─────────────────────────────────────────────────
 
-tab1 = st.tabs(["📋 Registros"])[0]
+tab1, tab2 = st.tabs(["📋 Registros", "👥 Perfil Sociodemográfico"])
 
 # ── ABA 1: TABELA DE REGISTROS ───────────────────
 
@@ -419,100 +508,40 @@ with tab1:
 
     exibir = df.copy()
 
-    # Renomeia todas as colunas para nomes legíveis
     renomear = {
-        # Identificação
-        "Ano":                       "Ano",
-        "Trimestre":                 "Trim.",
-        "UF":                        "UF",
-        "Capital":                   "Capital",
-        "RM_RIDE":                   "RM/RIDE",
-        "UPA":                       "UPA",
-        "Estrato":                   "Estrato",
-        "V1008":                     "Nº Seleção Domicílio",
-        "V1014":                     "Painel",
-        "V1016":                     "Nº Entrevista",
-        "Situacao":                  "Situação Domicílio",
-        "Area":                      "Tipo de Área",
-        "V1027":                     "Peso s/ Calibração",
-        "V1028":                     "Peso c/ Calibração",
-        "V1029":                     "Projeção Geográfica",
-        "V1033":                     "Projeção Sexo/Idade",
-        "posest":                    "Domínio Projeção Geo.",
-        "posest_sxi":                "Domínio Projeção S/I",
-        # Moradores
-        "Pessoas_Domicilio":         "Pessoas no Domicílio",
-        "Sexo":                      "Sexo",
-        "Idade":                     "Idade",
-        "Cor_Raca":                  "Cor/Raça",
-        # Educação
-        "Curso_Anterior":            "Curso Mais Elevado",
-        "Conclusao_Curso":           "Concluiu Curso",
-        # Trab. principal — estrutura
-        "Trab_Remunerado_Produtos":  "Trab. Rem. Produtos",
-        "Posicao_Trabalho":          "Posição Trab. Principal",
-        "V4013":                     "CNAE (código)",
-        "Secao_CNAE":                "Seção CNAE",
-        "V4015":                     "Trab. Não Remunerado",
-        "V40151":                    "Não Remun. 1–5",
-        "V401511":                   "1 a 5 Não Remun.",
-        "V401512":                   "6 a 10 Não Remun.",
-        "V4016":                     "Nº Empregados",
-        "V40161":                    "1–5 Empregados",
-        "V40162":                    "6–10 Empregados",
-        "V40163":                    "11–50 Empregados",
-        "V4017":                     "Tinha Sócio",
-        "V40171":                    "Qtd. Sócios",
-        "V401711":                   "1–5 Sócios",
-        "V4018":                     "Total Pessoas Negócio",
-        "V40181":                    "1–5 Pessoas Negócio",
-        "V40182":                    "6–10 Pessoas Negócio",
-        "V40183":                    "11–50 Pessoas Negócio",
-        "CNPJ":                      "CNPJ Registrado",
-        "V4020":                     "Tipo Local Negócio",
-        "V4021":                     "Trab. no Estabelecimento",
-        "Local_Trabalho":            "Local de Trabalho",
-        "V4024":                     "Serv. Dom. +1 Domicílio",
-        "Emp_Temporario":            "Emp. Temporário",
-        "V4026":                     "Contratado pelo Resp.",
-        "V4027":                     "Contratado por Interm.",
-        "Servidor_Publico":          "Servidor Público",
-        "Carteira_Assinada":         "Carteira Assinada",
-        "Previdencia":               "Previdência",
-        # Trab. principal — rendimento
-        "V4033":                     "Rend. Hab. (aux.)",
-        "V40331":                    "Recebia em Dinheiro Hab.",
-        "Renda_Habitual":            "Renda Hab. (R$)",
-        "Renda_Hab_Produtos":        "Renda Hab. Produtos (R$)",
-        "V4034":                     "Rend. Mês Ref. (aux.)",
-        "Renda_MesRef":              "Renda Mês Ref. (R$)",
-        "Renda_MesRef_Produtos":     "Renda Mês Ref. Produtos (R$)",
-        # Trab. principal — horas
-        "Horas_Semana":              "Horas Normais/Sem",
-        "Horas_Efetivas":            "Horas Efetivas/Sem",
-        # Trab. secundário
-        "Posicao_Trab_Sec":          "Posição Trab. Secundário",
-        "V4044":                     "CNAE Trab. Secundário",
-        "V4045":                     "Área Trab. Secundário",
-        "CNPJ_Sec":                  "CNPJ Trab. Secundário",
-        "Carteira_Sec":              "Carteira Trab. Secundário",
-        "V4050":                     "Rend. Hab. Sec. (aux.)",
-        "V40501":                    "Recebia Dinheiro Hab. Sec.",
-        "Renda_Hab_Sec":             "Renda Hab. Secundário (R$)",
-        "V4051":                     "Rend. Mês Ref. Sec. (aux.)",
-        "V40511":                    "Recebeu Dinheiro Mês Sec.",
-        "Renda_MesRef_Sec":          "Renda Mês Ref. Sec. (R$)",
-        "Renda_MesRef_Produtos_Sec": "Renda Mês Ref. Prod. Sec. (R$)",
-        # Outros trabalhos
-        "Renda_MesRef_Outros":       "Renda Mês Ref. Outros (R$)",
-        "Renda_MesRef_Outros_Produtos": "Renda Mês Ref. Outros Prod. (R$)",
-        # Derivadas
-        "Condicao":                  "Condição Ocupação",
-        "Periodo":                   "Período",
+        "Ano":"Ano","Trimestre":"Trim.","UF":"UF","Capital":"Capital","RM_RIDE":"RM/RIDE",
+        "UPA":"UPA","Estrato":"Estrato","V1008":"Nº Seleção Domicílio","V1014":"Painel",
+        "V1016":"Nº Entrevista","Situacao":"Situação Domicílio","Area":"Tipo de Área",
+        "V1027":"Peso s/ Calibração","V1028":"Peso c/ Calibração","V1029":"Projeção Geográfica",
+        "V1033":"Projeção Sexo/Idade","posest":"Domínio Projeção Geo.","posest_sxi":"Domínio Projeção S/I",
+        "Pessoas_Domicilio":"Pessoas no Domicílio","Sexo":"Sexo","Idade":"Idade","Cor_Raca":"Cor/Raça",
+        "Curso_Anterior":"Curso Mais Elevado","Conclusao_Curso":"Concluiu Curso",
+        "Trab_Remunerado_Produtos":"Trab. Rem. Produtos","Posicao_Trabalho":"Posição Trab. Principal",
+        "V4013":"CNAE (código)","Secao_CNAE":"Seção CNAE","V4015":"Trab. Não Remunerado",
+        "V40151":"Não Remun. 1–5","V401511":"1 a 5 Não Remun.","V401512":"6 a 10 Não Remun.",
+        "V4016":"Nº Empregados","V40161":"1–5 Empregados","V40162":"6–10 Empregados",
+        "V40163":"11–50 Empregados","V4017":"Tinha Sócio","V40171":"Qtd. Sócios","V401711":"1–5 Sócios",
+        "V4018":"Total Pessoas Negócio","V40181":"1–5 Pessoas Negócio","V40182":"6–10 Pessoas Negócio",
+        "V40183":"11–50 Pessoas Negócio","CNPJ":"CNPJ Registrado","V4020":"Tipo Local Negócio",
+        "V4021":"Trab. no Estabelecimento","Local_Trabalho":"Local de Trabalho",
+        "V4024":"Serv. Dom. +1 Domicílio","Emp_Temporario":"Emp. Temporário",
+        "V4026":"Contratado pelo Resp.","V4027":"Contratado por Interm.",
+        "Servidor_Publico":"Servidor Público","Carteira_Assinada":"Carteira Assinada","Previdencia":"Previdência",
+        "V4033":"Rend. Hab. (aux.)","V40331":"Recebia em Dinheiro Hab.",
+        "Renda_Habitual":"Renda Hab. (R$)","Renda_Hab_Produtos":"Renda Hab. Produtos (R$)",
+        "V4034":"Rend. Mês Ref. (aux.)","Renda_MesRef":"Renda Mês Ref. (R$)",
+        "Renda_MesRef_Produtos":"Renda Mês Ref. Produtos (R$)","Horas_Semana":"Horas Normais/Sem",
+        "Horas_Efetivas":"Horas Efetivas/Sem","Posicao_Trab_Sec":"Posição Trab. Secundário",
+        "V4044":"CNAE Trab. Secundário","V4045":"Área Trab. Secundário","CNPJ_Sec":"CNPJ Trab. Secundário",
+        "Carteira_Sec":"Carteira Trab. Secundário","V4050":"Rend. Hab. Sec. (aux.)",
+        "V40501":"Recebia Dinheiro Hab. Sec.","Renda_Hab_Sec":"Renda Hab. Secundário (R$)",
+        "V4051":"Rend. Mês Ref. Sec. (aux.)","V40511":"Recebeu Dinheiro Mês Sec.",
+        "Renda_MesRef_Sec":"Renda Mês Ref. Sec. (R$)","Renda_MesRef_Produtos_Sec":"Renda Mês Ref. Prod. Sec. (R$)",
+        "Renda_MesRef_Outros":"Renda Mês Ref. Outros (R$)","Renda_MesRef_Outros_Produtos":"Renda Mês Ref. Outros Prod. (R$)",
+        "Condicao":"Condição Ocupação","Periodo":"Período",
     }
     exibir = exibir.rename(columns={k: v for k, v in renomear.items() if k in exibir.columns})
 
-    # Formata colunas de renda
     for col_renda in [
         "Renda Hab. (R$)", "Renda Hab. Produtos (R$)",
         "Renda Mês Ref. (R$)", "Renda Mês Ref. Produtos (R$)",
@@ -522,11 +551,10 @@ with tab1:
     ]:
         if col_renda in exibir.columns:
             exibir[col_renda] = exibir[col_renda].apply(
-                lambda x: f"R$ {x:,.2f}".replace(",","X").replace(".",",").replace("X",".") 
+                lambda x: f"R$ {x:,.2f}".replace(",","X").replace(".",",").replace("X",".")
                 if pd.notna(x) and x > 0 else "—"
             )
 
-    # Substitui None/NaN por "—" em todas as colunas
     for col in exibir.columns:
         exibir[col] = exibir[col].apply(
             lambda x: "—" if (x is None or (isinstance(x, float) and pd.isna(x))
@@ -539,30 +567,46 @@ with tab1:
         hide_index=True,
         height=560,
     )
-    
-    # Renda média por posição no trabalho
-    rpos = (
-        df[(df["Renda_Habitual"] > 0) & df["Posicao_Trabalho"].notna()]
-        .groupby("Posicao_Trabalho")["Renda_Habitual"]
-        .agg(["mean","count"])
-        .reset_index()
-    )
-    rpos.columns = ["Posição","Renda Média","N"]
-    rpos = rpos[rpos["N"] >= 30].sort_values("Renda Média", ascending=True)
 
-    fig3 = px.bar(
-        rpos, x="Renda Média", y="Posição", orientation="h",
-        title="Renda habitual média por posição no trabalho (R$)",
-        color="Renda Média",
-        color_continuous_scale=["#E8E4D9","#1A1A2E"],
-    )
-    fig3.update_layout(
-        plot_bgcolor="#FFFFFF", paper_bgcolor="#F7F6F2",
-        font_family="IBM Plex Sans", title_font_size=13,
-        margin=dict(t=40, b=20, l=10, r=10),
-        coloraxis_showscale=False,
-    )
-    st.plotly_chart(fig3, use_container_width=True)
+# ── ABA 2: PERFIL SOCIODEMOGRÁFICO ───────────────
+
+with tab2:
+    st.caption("Distribuição longitudinal por período — contagem e percentual dentro de cada período")
+
+    # Variáveis do perfil: (coluna_banco, rótulo amigável)
+    PERFIL_VARS = [
+        ("V2007",  "V2007 — Sexo"),
+        ("V2010",  "V2010 — Cor ou Raça"),
+        ("V1022",  "V1022 — Situação do Domicílio"),
+        ("V4012",  "V4012 — Posição no Trabalho Principal"),
+        ("V4029",  "V4029 — Carteira de Trabalho Assinada"),
+        ("V4032",  "V4032 — Contribuinte de Previdência"),
+    ]
+
+    for coluna, titulo in PERFIL_VARS:
+        st.markdown(f'<div class="perfil-section-title">{titulo}</div>', unsafe_allow_html=True)
+
+        # Query agregada no banco — muito mais leve que processar o df completo
+        df_agg = carregar_perfil(con, filtros, coluna)
+
+        if df_agg.empty:
+            st.caption("Sem dados para os filtros selecionados.")
+            continue
+
+        df_pivot = montar_tabela_perfil(df_agg)
+
+        if df_pivot.empty:
+            st.caption("Sem dados.")
+            continue
+
+        st.dataframe(
+            df_pivot,
+            use_container_width=True,
+            hide_index=True,
+            height=min(40 + len(df_pivot) * 38, 400),
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────
 #  RODAPÉ
