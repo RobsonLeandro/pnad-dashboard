@@ -163,6 +163,52 @@ html, body, [class*="css"] {
     margin-bottom: 0.8rem;
     margin-top: 1.2rem;
 }
+
+/* Estatísticas descritivas */
+.estat-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #1A1A2E;
+    border-bottom: 2px solid #D93B2B;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.8rem;
+    margin-top: 1.2rem;
+}
+
+/* Análise gráfica / comparativa */
+.graf-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #1A1A2E;
+    border-bottom: 2px solid #2E6DA4;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.8rem;
+    margin-top: 1.4rem;
+}
+.comp-section-title {
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #1A1A2E;
+    border-bottom: 2px solid #2A7A4B;
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.8rem;
+    margin-top: 1.4rem;
+}
+.insight-box {
+    background: #F0F4FF;
+    border-left: 3px solid #2E6DA4;
+    padding: 0.7rem 1rem;
+    border-radius: 0 4px 4px 0;
+    font-size: 0.82rem;
+    color: #1A1A2E;
+    margin-bottom: 1rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -365,6 +411,426 @@ def condicao_ocupacao(row):
         return "Ocupada"
     return "Fora da força"
 
+
+def calcular_renda_total(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Parte 1 — Constrói renda_total = r_princ + r_sec + r_outros
+
+    r_princ  = Renda_MesRef      (V403412) + Renda_MesRef_Produtos   (V403422)
+    r_sec    = Renda_MesRef_Sec  (V405112) + Renda_MesRef_Produtos_Sec (V405122)
+    r_outros = Renda_MesRef_Outros (V405912) + Renda_MesRef_Outros_Produtos (V405922)
+
+    Valores nulos são tratados como 0 apenas no somatório, preservando
+    o nulo original nas colunas-fonte.
+    """
+    cols_renda = {
+        "Renda_MesRef":               "V403412",
+        "Renda_MesRef_Produtos":      "V403422",
+        "Renda_MesRef_Sec":           "V405112",
+        "Renda_MesRef_Produtos_Sec":  "V405122",
+        "Renda_MesRef_Outros":        "V405912",
+        "Renda_MesRef_Outros_Produtos": "V405922",
+    }
+
+    # garante que todas as colunas existam e sejam numéricas
+    for col in cols_renda:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        else:
+            df[col] = pd.NA
+
+    r_princ  = df["Renda_MesRef"].fillna(0)  + df["Renda_MesRef_Produtos"].fillna(0)
+    r_sec    = df["Renda_MesRef_Sec"].fillna(0) + df["Renda_MesRef_Produtos_Sec"].fillna(0)
+    r_outros = df["Renda_MesRef_Outros"].fillna(0) + df["Renda_MesRef_Outros_Produtos"].fillna(0)
+
+    renda_total = r_princ + r_sec + r_outros
+
+    # Onde todas as fontes são nulas, mantém NaN (indivíduo sem rendimento algum)
+    todas_nulas = (
+        df["Renda_MesRef"].isna()
+        & df["Renda_MesRef_Produtos"].isna()
+        & df["Renda_MesRef_Sec"].isna()
+        & df["Renda_MesRef_Produtos_Sec"].isna()
+        & df["Renda_MesRef_Outros"].isna()
+        & df["Renda_MesRef_Outros_Produtos"].isna()
+    )
+    renda_total[todas_nulas] = pd.NA
+
+    df["Renda_Total"] = renda_total
+    return df
+
+
+def calcular_estatisticas(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Parte 2 — Estatísticas descritivas de Idade, Horas_Semana,
+    Horas_Efetivas e Renda_Total, por período.
+
+    Retorna um DataFrame pronto para exibição.
+    """
+    variaveis = {
+        "Idade (V2009)":                    "Idade",
+        "Horas Hab./Semana (V4039)":        "Horas_Semana",
+        "Horas Efetivas/Semana (V4039C)":   "Horas_Efetivas",
+        "Renda Total (R$)":                 "Renda_Total",
+    }
+
+    if "Periodo" not in df.columns:
+        df["Periodo"] = df["Ano"].astype(str) + " T" + df["Trimestre"].astype(str)
+
+    periodos = sorted(df["Periodo"].unique())
+    linhas   = []
+
+    for label, col in variaveis.items():
+        if col not in df.columns:
+            continue
+
+        serie_global = pd.to_numeric(df[col], errors="coerce").dropna()
+        # Para renda_total considera apenas valores > 0 nas estatísticas
+        if col == "Renda_Total":
+            serie_global = serie_global[serie_global > 0]
+
+        linha = {
+            "Variável":      label,
+            "Período":       "GERAL",
+            "N válidos":     len(serie_global),
+            "Média":         serie_global.mean()   if len(serie_global) else None,
+            "Mediana":       serie_global.median() if len(serie_global) else None,
+            "Desvio-padrão": serie_global.std()    if len(serie_global) else None,
+            "Q1 (25%)":      serie_global.quantile(0.25) if len(serie_global) else None,
+            "Q3 (75%)":      serie_global.quantile(0.75) if len(serie_global) else None,
+        }
+        linhas.append(linha)
+
+        for per in periodos:
+            sub = pd.to_numeric(
+                df.loc[df["Periodo"] == per, col], errors="coerce"
+            ).dropna()
+            if col == "Renda_Total":
+                sub = sub[sub > 0]
+
+            linhas.append({
+                "Variável":      label,
+                "Período":       per,
+                "N válidos":     len(sub),
+                "Média":         sub.mean()            if len(sub) else None,
+                "Mediana":       sub.median()           if len(sub) else None,
+                "Desvio-padrão": sub.std()              if len(sub) else None,
+                "Q1 (25%)":      sub.quantile(0.25)    if len(sub) else None,
+                "Q3 (75%)":      sub.quantile(0.75)    if len(sub) else None,
+            })
+
+    return pd.DataFrame(linhas)
+
+
+def formatar_estat(df_estat: pd.DataFrame) -> pd.DataFrame:
+    """Formata os números das estatísticas para exibição."""
+    df = df_estat.copy()
+
+    cols_reais = ["Média", "Mediana", "Desvio-padrão", "Q1 (25%)", "Q3 (75%)"]
+    is_renda   = df["Variável"].str.contains("Renda")
+
+    for col in cols_reais:
+        df[col] = df.apply(
+            lambda row: (
+                f"R$ {row[col]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                if pd.notna(row[col]) and "Renda" in row["Variável"]
+                else (f"{row[col]:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                      if pd.notna(row[col])
+                      else "—")
+            ),
+            axis=1,
+        )
+
+    df["N válidos"] = df["N válidos"].apply(
+        lambda x: f"{int(x):,}".replace(",", ".") if pd.notna(x) else "—"
+    )
+
+    return df
+
+
+# ─────────────────────────────────────────────────
+#  MAPA DE SEÇÕES CNAE (para CNAE Agrupado)
+# ─────────────────────────────────────────────────
+
+CNAE_SECOES = {
+    "A": "Agricultura e Pecuária",
+    "B": "Indústrias Extrativas",
+    "C": "Indústrias de Transformação",
+    "D": "Eletricidade e Gás",
+    "E": "Água e Saneamento",
+    "F": "Construção",
+    "G": "Comércio e Reparação",
+    "H": "Transporte e Armazenagem",
+    "I": "Alojamento e Alimentação",
+    "J": "Informação e Comunicação",
+    "K": "Atividades Financeiras",
+    "L": "Atividades Imobiliárias",
+    "M": "Atividades Profissionais",
+    "N": "Atividades Administrativas",
+    "O": "Administração Pública",
+    "P": "Educação",
+    "Q": "Saúde e Serviços Sociais",
+    "R": "Artes e Cultura",
+    "S": "Outras Atividades de Serviços",
+    "T": "Serviços Domésticos",
+    "U": "Organismos Internacionais",
+}
+
+# Labels de nível de instrução (V3009A) — valores típicos da PNAD
+INSTRUCAO_LABELS = {
+    "1":  "Sem instrução",
+    "2":  "Fund. incompleto",
+    "3":  "Fund. completo",
+    "4":  "Médio incompleto",
+    "5":  "Médio completo",
+    "6":  "Superior incompleto",
+    "7":  "Superior completo",
+    "8":  "Pós-graduação",
+}
+
+# ─────────────────────────────────────────────────
+#  FUNÇÕES — ANÁLISE GRÁFICA (PARTE 3)
+# ─────────────────────────────────────────────────
+
+CORES_PADRAO = px.colors.qualitative.Set2
+
+
+def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str = "") -> go.Figure:
+    serie = pd.to_numeric(df[coluna], errors="coerce").dropna()
+    if coluna == "Renda_Total":
+        serie = serie[serie > 0]
+
+    fig = px.histogram(
+        serie,
+        nbins=40,
+        title=titulo,
+        labels={"value": prefixo_x or coluna, "count": "Frequência"},
+        color_discrete_sequence=["#2E6DA4"],
+        opacity=0.85,
+    )
+    fig.update_layout(
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font_family="IBM Plex Sans",
+        title_font_size=13,
+        showlegend=False,
+        bargap=0.05,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(gridcolor="#F0F0F0"),
+        margin=dict(t=50, b=40, l=40, r=20),
+    )
+    return fig
+
+
+def graf_barras_categorico(df: pd.DataFrame, coluna: str, titulo: str,
+                            mapa_labels: dict = None, top_n: int = 15) -> go.Figure:
+    serie = df[coluna].dropna().astype(str).str.strip()
+    if mapa_labels:
+        serie = serie.map(mapa_labels).fillna(serie)
+
+    contagem = serie.value_counts().head(top_n).reset_index()
+    contagem.columns = ["Categoria", "N"]
+
+    fig = px.bar(
+        contagem,
+        x="N",
+        y="Categoria",
+        orientation="h",
+        title=titulo,
+        labels={"N": "Quantidade", "Categoria": ""},
+        color="N",
+        color_continuous_scale=["#C8DDEF", "#2E6DA4"],
+    )
+    fig.update_layout(
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        font_family="IBM Plex Sans",
+        title_font_size=13,
+        coloraxis_showscale=False,
+        yaxis=dict(autorange="reversed"),
+        xaxis=dict(gridcolor="#F0F0F0"),
+        margin=dict(t=50, b=40, l=180, r=20),
+    )
+    return fig
+
+
+def insight_renda(df):
+    s = pd.to_numeric(df["Renda_Total"], errors="coerce")
+    s = s[s > 0].dropna()
+    if s.empty:
+        return "Sem dados de renda para o período selecionado."
+    return (
+        f"A renda total apresenta média de R$ {s.mean():,.2f} e mediana de R$ {s.median():,.2f}, "
+        f"evidenciando assimetria à direita típica de distribuições de renda. "
+        f"O desvio-padrão de R$ {s.std():,.2f} indica alta dispersão entre os trabalhadores."
+    ).replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def insight_idade(df):
+    s = pd.to_numeric(df["Idade"], errors="coerce").dropna()
+    if s.empty:
+        return "Sem dados de idade disponíveis."
+    return (
+        f"A distribuição etária concentra-se entre {int(s.quantile(0.25))} e {int(s.quantile(0.75))} anos "
+        f"(intervalo interquartil), com média de {s.mean():.1f} anos e mediana de {s.median():.1f} anos."
+    )
+
+
+def insight_instrucao(df):
+    col = "Curso_Anterior"
+    if col not in df.columns:
+        return ""
+    contagem = df[col].dropna().astype(str).str.strip()
+    contagem = contagem.map(INSTRUCAO_LABELS).fillna(contagem).value_counts()
+    if contagem.empty:
+        return ""
+    moda = contagem.index[0]
+    pct  = contagem.iloc[0] / contagem.sum() * 100
+    return f"O nível de instrução mais frequente é '{moda}', representando {pct:.1f}% dos registros com dado informado."
+
+
+def insight_cnae(df):
+    col = "Secao_CNAE"
+    if col not in df.columns:
+        return ""
+    contagem = df[col].dropna().astype(str).str.strip()
+    contagem = contagem.map(CNAE_SECOES).fillna(contagem).value_counts()
+    if contagem.empty:
+        return ""
+    top = contagem.index[0]
+    pct = contagem.iloc[0] / contagem.sum() * 100
+    return f"O setor com maior concentração de trabalhadores é '{top}', com {pct:.1f}% dos ocupados."
+
+
+# ─────────────────────────────────────────────────
+#  FUNÇÕES — ANÁLISE COMPARATIVA (PARTE 4 — A e B)
+# ─────────────────────────────────────────────────
+
+def comp_sexo(df: pd.DataFrame):
+    """A) Comparativo por Sexo: idade média, renda média e mediana da renda."""
+    col_sexo  = "Sexo"
+    col_renda = "Renda_Total"
+    col_idade = "Idade"
+
+    if col_sexo not in df.columns:
+        return None, None, None
+
+    df_work = df[[col_sexo, col_renda, col_idade]].copy()
+    df_work[col_renda] = pd.to_numeric(df_work[col_renda], errors="coerce")
+    df_work[col_idade] = pd.to_numeric(df_work[col_idade], errors="coerce")
+    df_work = df_work[df_work[col_sexo].notna()]
+    df_work[col_sexo] = df_work[col_sexo].astype(str).str.strip()
+
+    # Tabela resumo
+    grupos = df_work.groupby(col_sexo)
+    renda_pos = df_work[df_work[col_renda] > 0].groupby(col_sexo)[col_renda]
+
+    resumo = pd.DataFrame({
+        "Sexo":           grupos[col_sexo].count().index,
+        "N":              grupos[col_sexo].count().values,
+        "Idade Média":    grupos[col_idade].mean().values,
+        "Renda Média (R$)":   renda_pos.mean().reindex(grupos[col_sexo].count().index).values,
+        "Mediana Renda (R$)": renda_pos.median().reindex(grupos[col_sexo].count().index).values,
+    })
+
+    # Gráfico 1 — idade média por sexo
+    fig_idade = px.bar(
+        resumo, x="Sexo", y="Idade Média",
+        title="Idade Média por Sexo",
+        color="Sexo",
+        color_discrete_sequence=["#2E6DA4", "#D93B2B"],
+        text_auto=".1f",
+    )
+    fig_idade.update_layout(
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        font_family="IBM Plex Sans", showlegend=False,
+        yaxis=dict(gridcolor="#F0F0F0"), xaxis=dict(showgrid=False),
+        margin=dict(t=50, b=40, l=40, r=20),
+    )
+
+    # Gráfico 2 — renda média e mediana por sexo (grouped)
+    df_renda_long = resumo.melt(
+        id_vars="Sexo",
+        value_vars=["Renda Média (R$)", "Mediana Renda (R$)"],
+        var_name="Métrica", value_name="Valor",
+    )
+    fig_renda = px.bar(
+        df_renda_long, x="Sexo", y="Valor", color="Métrica",
+        barmode="group",
+        title="Renda Média e Mediana por Sexo (R$)",
+        color_discrete_sequence=["#2E6DA4", "#F4A53A"],
+        text_auto=",.0f",
+    )
+    fig_renda.update_layout(
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        font_family="IBM Plex Sans",
+        yaxis=dict(gridcolor="#F0F0F0"), xaxis=dict(showgrid=False),
+        margin=dict(t=50, b=40, l=40, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+
+    return resumo, fig_idade, fig_renda
+
+
+def comp_escolaridade(df: pd.DataFrame):
+    """B) Comparativo por Escolaridade (V3009A): renda média e mediana."""
+    col_instr = "Curso_Anterior"
+    col_renda = "Renda_Total"
+
+    if col_instr not in df.columns:
+        return None, None
+
+    df_work = df[[col_instr, col_renda]].copy()
+    df_work[col_renda] = pd.to_numeric(df_work[col_renda], errors="coerce")
+    df_work = df_work[df_work[col_instr].notna() & (df_work[col_renda] > 0)]
+    df_work[col_instr] = (
+        df_work[col_instr].astype(str).str.strip()
+        .map(INSTRUCAO_LABELS)
+        .fillna(df_work[col_instr].astype(str).str.strip())
+    )
+
+    # Ordem natural de escolaridade
+    ordem = list(INSTRUCAO_LABELS.values())
+    presentes = [o for o in ordem if o in df_work[col_instr].unique()]
+    outros    = [v for v in df_work[col_instr].unique() if v not in presentes]
+    ordem_final = presentes + sorted(outros)
+
+    grupos = df_work.groupby(col_instr)[col_renda]
+    resumo = pd.DataFrame({
+        "Escolaridade":        grupos.mean().index,
+        "N":                   df_work.groupby(col_instr)[col_renda].count().values,
+        "Renda Média (R$)":    grupos.mean().values,
+        "Mediana Renda (R$)":  grupos.median().values,
+    })
+    resumo["Escolaridade"] = pd.Categorical(resumo["Escolaridade"], categories=ordem_final, ordered=True)
+    resumo = resumo.sort_values("Escolaridade")
+
+    # Gráfico — renda média e mediana por escolaridade
+    df_long = resumo.melt(
+        id_vars="Escolaridade",
+        value_vars=["Renda Média (R$)", "Mediana Renda (R$)"],
+        var_name="Métrica", value_name="Valor",
+    )
+    fig = px.bar(
+        df_long, x="Valor", y="Escolaridade",
+        color="Métrica", barmode="group",
+        orientation="h",
+        title="Renda Média e Mediana por Nível de Instrução (R$)",
+        color_discrete_sequence=["#2E6DA4", "#F4A53A"],
+    )
+    fig.update_layout(
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        font_family="IBM Plex Sans",
+        yaxis=dict(autorange="reversed", categoryorder="array", categoryarray=ordem_final),
+        xaxis=dict(gridcolor="#F0F0F0"),
+        margin=dict(t=50, b=40, l=200, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        height=420,
+    )
+
+    return resumo, fig
+
+
 # ─────────────────────────────────────────────────
 #  SIDEBAR — FILTROS
 # ─────────────────────────────────────────────────
@@ -462,8 +928,12 @@ if not df.empty:
     df["Renda_MesRef"]   = pd.to_numeric(df["Renda_MesRef"],   errors="coerce")
     df["Idade"]          = pd.to_numeric(df["Idade"],           errors="coerce")
     df["Horas_Semana"]   = pd.to_numeric(df["Horas_Semana"],    errors="coerce")
+    df["Horas_Efetivas"] = pd.to_numeric(df["Horas_Efetivas"],  errors="coerce")
     df["Condicao"]       = df.apply(condicao_ocupacao, axis=1)
     df["Periodo"]        = df["Ano"].astype(str) + " T" + df["Trimestre"].astype(str)
+
+    # ── PARTE 1: calcula renda_total ──────────────
+    df = calcular_renda_total(df)
 
 # ─────────────────────────────────────────────────
 #  CABEÇALHO PRINCIPAL
@@ -480,10 +950,10 @@ if df.empty:
 #  MÉTRICAS
 # ─────────────────────────────────────────────────
 
-renda_media = df["Renda_Habitual"].dropna()
-renda_media = renda_media[renda_media > 0].mean()
-idade_media = df["Idade"].mean()
-horas_media = df["Horas_Semana"].dropna().mean()
+renda_media  = df["Renda_Habitual"].dropna()
+renda_media  = renda_media[renda_media > 0].mean()
+idade_media  = df["Idade"].mean()
+horas_media  = df["Horas_Semana"].dropna().mean()
 
 c1, c2, c3 = st.columns(3)
 c1.metric("REGISTROS FILTRADOS", f"{len(df):,}".replace(",", "."))
@@ -497,7 +967,13 @@ st.markdown("<br>", unsafe_allow_html=True)
 #  ABAS
 # ─────────────────────────────────────────────────
 
-tab1, tab2 = st.tabs(["📋 Registros", "👥 Perfil Sociodemográfico"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📋 Registros",
+    "👥 Perfil Sociodemográfico",
+    "📈 Estatísticas Descritivas",
+    "📊 Análise Gráfica",
+    "🔍 Análise Comparativa",
+])
 
 # ── ABA 1: TABELA DE REGISTROS ───────────────────
 
@@ -538,6 +1014,8 @@ with tab1:
         "Renda_MesRef_Sec":"Renda Mês Ref. Sec. (R$)","Renda_MesRef_Produtos_Sec":"Renda Mês Ref. Prod. Sec. (R$)",
         "Renda_MesRef_Outros":"Renda Mês Ref. Outros (R$)","Renda_MesRef_Outros_Produtos":"Renda Mês Ref. Outros Prod. (R$)",
         "Condicao":"Condição Ocupação","Periodo":"Período",
+        # ── PARTE 1: nova coluna ──────────────────
+        "Renda_Total": "Renda Total (R$)",
     }
     exibir = exibir.rename(columns={k: v for k, v in renomear.items() if k in exibir.columns})
 
@@ -547,6 +1025,7 @@ with tab1:
         "Renda Hab. Secundário (R$)", "Renda Mês Ref. Sec. (R$)",
         "Renda Mês Ref. Prod. Sec. (R$)",
         "Renda Mês Ref. Outros (R$)", "Renda Mês Ref. Outros Prod. (R$)",
+        "Renda Total (R$)",   # ← nova coluna incluída na formatação
     ]:
         if col_renda in exibir.columns:
             exibir[col_renda] = exibir[col_renda].apply(
@@ -559,6 +1038,10 @@ with tab1:
             lambda x: "—" if (x is None or (isinstance(x, float) and pd.isna(x))
                               or str(x).strip() in ["None","nan","NaN",""]) else x
         )
+
+    # Reordena para garantir que Renda Total fique como última coluna
+    cols_ordem = [c for c in exibir.columns if c != "Renda Total (R$)"] + ["Renda Total (R$)"]
+    exibir = exibir[cols_ordem]
 
     st.dataframe(
         exibir,
@@ -606,6 +1089,254 @@ with tab2:
         )
 
         st.markdown("<br>", unsafe_allow_html=True)
+
+# ── ABA 3: ESTATÍSTICAS DESCRITIVAS ─────────────
+
+with tab3:
+    st.caption(
+        "Medidas de tendência central, dispersão e posição para Idade, "
+        "Horas trabalhadas e Renda Total — calculadas sobre os registros filtrados."
+    )
+
+    st.markdown('<div class="estat-section-title">Visão Geral + Por Período</div>', unsafe_allow_html=True)
+
+    df_estat = calcular_estatisticas(df)
+
+    if df_estat.empty:
+        st.warning("Sem dados suficientes para calcular estatísticas.")
+    else:
+        df_fmt = formatar_estat(df_estat)
+
+        # Exibe cada variável em uma seção separada
+        for variavel in df_fmt["Variável"].unique():
+            st.markdown(
+                f'<div class="estat-section-title">{variavel}</div>',
+                unsafe_allow_html=True,
+            )
+
+            sub = df_fmt[df_fmt["Variável"] == variavel].drop(columns=["Variável"])
+
+            # Destaca a linha GERAL
+            def highlight_geral(row):
+                if row["Período"] == "GERAL":
+                    return ["background-color: #F0F4FF; font-weight: 600"] * len(row)
+                return [""] * len(row)
+
+            st.dataframe(
+                sub.style.apply(highlight_geral, axis=1),
+                use_container_width=True,
+                hide_index=True,
+                height=min(40 + len(sub) * 38, 400),
+            )
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Tabela consolidada (todas as variáveis × período) ──
+        st.markdown('<div class="estat-section-title">Tabela Consolidada — Médias por Período</div>', unsafe_allow_html=True)
+        st.caption("Apenas as médias, para comparação rápida entre variáveis e períodos.")
+
+        pivot_resumo = (
+            df_estat[df_estat["Período"] != "GERAL"]
+            .pivot_table(
+                index="Variável",
+                columns="Período",
+                values="Média",
+                aggfunc="first",
+            )
+            .reset_index()
+        )
+
+        # Formata valores da pivot
+        for col in pivot_resumo.columns:
+            if col == "Variável":
+                continue
+            pivot_resumo[col] = pivot_resumo.apply(
+                lambda row: (
+                    f"R$ {row[col]:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                    if pd.notna(row[col]) and "Renda" in str(row["Variável"])
+                    else (f"{row[col]:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                          if pd.notna(row[col])
+                          else "—")
+                ),
+                axis=1,
+            )
+
+        st.dataframe(
+            pivot_resumo,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+# ── ABA 4: ANÁLISE GRÁFICA ───────────────────────
+
+with tab4:
+    st.caption(
+        "Distribuições e frequências das principais variáveis — "
+        "calculadas sobre os registros filtrados na sidebar."
+    )
+
+    # ── 1. Histograma da Renda Total ─────────────
+    st.markdown('<div class="graf-section-title">Histograma — Renda Total (renda_total)</div>', unsafe_allow_html=True)
+
+    renda_valida = pd.to_numeric(df["Renda_Total"], errors="coerce")
+    renda_valida = renda_valida[renda_valida > 0].dropna()
+
+    if renda_valida.empty:
+        st.caption("Sem dados de renda total para os filtros selecionados.")
+    else:
+        fig_h_renda = graf_histograma(df, "Renda_Total", "Distribuição da Renda Total (R$)", "Renda Total (R$)")
+        st.plotly_chart(fig_h_renda, use_container_width=True)
+        st.markdown(
+            f'<div class="insight-box">💡 {insight_renda(df)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 2. Histograma da Idade ────────────────────
+    st.markdown('<div class="graf-section-title">Histograma — Idade (V2009)</div>', unsafe_allow_html=True)
+
+    idade_valida = pd.to_numeric(df["Idade"], errors="coerce").dropna()
+
+    if idade_valida.empty:
+        st.caption("Sem dados de idade para os filtros selecionados.")
+    else:
+        fig_h_idade = graf_histograma(df, "Idade", "Distribuição da Idade (anos)", "Idade (anos)")
+        st.plotly_chart(fig_h_idade, use_container_width=True)
+        st.markdown(
+            f'<div class="insight-box">💡 {insight_idade(df)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 3. Gráfico de barras — Nível de Instrução ─
+    st.markdown('<div class="graf-section-title">Nível de Instrução — V3009A</div>', unsafe_allow_html=True)
+
+    col_instr = "Curso_Anterior"
+    if col_instr not in df.columns or df[col_instr].dropna().empty:
+        st.caption("Variável V3009A não disponível nos dados filtrados.")
+    else:
+        fig_instr = graf_barras_categorico(
+            df, col_instr,
+            "Distribuição por Nível de Instrução (V3009A)",
+            mapa_labels=INSTRUCAO_LABELS,
+        )
+        st.plotly_chart(fig_instr, use_container_width=True)
+        txt = insight_instrucao(df)
+        if txt:
+            st.markdown(f'<div class="insight-box">💡 {txt}</div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── 4. Gráfico de barras — CNAE Agrupado ──────
+    st.markdown('<div class="graf-section-title">Setor Econômico — CNAE Agrupado (V40132A)</div>', unsafe_allow_html=True)
+
+    col_cnae = "Secao_CNAE"
+    if col_cnae not in df.columns or df[col_cnae].dropna().empty:
+        st.caption("Variável V40132A não disponível nos dados filtrados.")
+    else:
+        fig_cnae = graf_barras_categorico(
+            df, col_cnae,
+            "Distribuição por Seção CNAE (setor econômico)",
+            mapa_labels=CNAE_SECOES,
+        )
+        st.plotly_chart(fig_cnae, use_container_width=True)
+        txt = insight_cnae(df)
+        if txt:
+            st.markdown(f'<div class="insight-box">💡 {txt}</div>', unsafe_allow_html=True)
+
+# ── ABA 5: ANÁLISE COMPARATIVA ────────────────────
+
+with tab5:
+    st.caption(
+        "Comparações entre grupos sociodemográficos — "
+        "A) por Sexo (V2007) e B) por Escolaridade (V3009A)."
+    )
+
+    # ── A) Comparativo por Sexo ───────────────────
+    st.markdown('<div class="comp-section-title">A) Comparativo por Sexo (V2007)</div>', unsafe_allow_html=True)
+    st.caption("Idade média, renda média e mediana da renda total — por sexo.")
+
+    resumo_sexo, fig_idade_sexo, fig_renda_sexo = comp_sexo(df)
+
+    if resumo_sexo is None:
+        st.warning("Variável de sexo (V2007) não encontrada nos dados.")
+    else:
+        # Tabela resumo
+        resumo_sexo_fmt = resumo_sexo.copy()
+        resumo_sexo_fmt["N"] = resumo_sexo_fmt["N"].apply(lambda x: f"{int(x):,}".replace(",", "."))
+        resumo_sexo_fmt["Idade Média"] = resumo_sexo_fmt["Idade Média"].apply(
+            lambda x: f"{x:.1f}" if pd.notna(x) else "—"
+        )
+        for col_r in ["Renda Média (R$)", "Mediana Renda (R$)"]:
+            resumo_sexo_fmt[col_r] = resumo_sexo_fmt[col_r].apply(
+                lambda x: (
+                    f"R$ {x:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                    if pd.notna(x) else "—"
+                )
+            )
+        st.dataframe(resumo_sexo_fmt, use_container_width=True, hide_index=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            st.plotly_chart(fig_idade_sexo, use_container_width=True)
+        with col_a2:
+            st.plotly_chart(fig_renda_sexo, use_container_width=True)
+
+        # Insight automático
+        if len(resumo_sexo) == 2:
+            grupos_sorted = resumo_sexo.sort_values("Renda Média (R$)", ascending=False)
+            maior = grupos_sorted.iloc[0]
+            menor = grupos_sorted.iloc[1]
+            dif_pct = (maior["Renda Média (R$)"] - menor["Renda Média (R$)"]) / menor["Renda Média (R$)"] * 100
+            txt_insight = (
+                f"{maior['Sexo']} apresenta renda média superior em {dif_pct:.1f}% "
+                f"em relação a {menor['Sexo']} "
+                f"(R$ {maior['Renda Média (R$)']:,.2f} vs R$ {menor['Renda Média (R$)']:,.2f})."
+            ).replace(",","X").replace(".",",").replace("X",".")
+            st.markdown(f'<div class="insight-box">💡 {txt_insight}</div>', unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── B) Comparativo por Escolaridade ───────────
+    st.markdown('<div class="comp-section-title">B) Comparativo por Escolaridade (V3009A)</div>', unsafe_allow_html=True)
+    st.caption("Renda média e mediana da renda total — por nível de instrução, em ordem crescente de escolaridade.")
+
+    resumo_esc, fig_esc = comp_escolaridade(df)
+
+    if resumo_esc is None:
+        st.warning("Variável de escolaridade (V3009A / Curso_Anterior) não encontrada nos dados.")
+    else:
+        # Tabela resumo
+        resumo_esc_fmt = resumo_esc.copy()
+        resumo_esc_fmt["N"] = resumo_esc_fmt["N"].apply(lambda x: f"{int(x):,}".replace(",", "."))
+        for col_r in ["Renda Média (R$)", "Mediana Renda (R$)"]:
+            resumo_esc_fmt[col_r] = resumo_esc_fmt[col_r].apply(
+                lambda x: (
+                    f"R$ {x:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+                    if pd.notna(x) else "—"
+                )
+            )
+        st.dataframe(resumo_esc_fmt, use_container_width=True, hide_index=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.plotly_chart(fig_esc, use_container_width=True)
+
+        # Insight automático
+        resumo_num = resumo_esc.dropna(subset=["Renda Média (R$)"])
+        if not resumo_num.empty:
+            menor_r = resumo_num.sort_values("Renda Média (R$)").iloc[0]
+            maior_r = resumo_num.sort_values("Renda Média (R$)").iloc[-1]
+            razao   = maior_r["Renda Média (R$)"] / menor_r["Renda Média (R$)"]
+            txt_esc = (
+                f"A renda média de quem possui '{maior_r['Escolaridade']}' é "
+                f"{razao:.1f}× maior do que a de quem possui '{menor_r['Escolaridade']}', "
+                f"evidenciando forte retorno financeiro à escolarização."
+            )
+            st.markdown(f'<div class="insight-box">💡 {txt_esc}</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────
 #  RODAPÉ
