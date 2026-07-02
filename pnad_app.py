@@ -577,16 +577,28 @@ CNAE_SECOES = {
     "U": "Organismos Internacionais",
 }
 
-# Labels de nível de instrução (V3009A) — valores típicos da PNAD
+# Labels de nível de instrução (V3009A) — "Qual foi o curso mais elevado que
+# ... frequentou anteriormente?" — tabela oficial do dicionário do IBGE
+# (dicionario_PNADC_microdados_trimestral.xls). Os códigos vêm do banco como
+# texto com zero à esquerda ("01", "02", ...), por isso as chaves aqui também
+# precisam ser strings de 2 dígitos — se não bater exatamente, o código bruto
+# aparece na tela em vez do nome (foi o que estava acontecendo antes).
 INSTRUCAO_LABELS = {
-    "1":  "Sem instrução",
-    "2":  "Fund. incompleto",
-    "3":  "Fund. completo",
-    "4":  "Médio incompleto",
-    "5":  "Médio completo",
-    "6":  "Superior incompleto",
-    "7":  "Superior completo",
-    "8":  "Pós-graduação",
+    "01": "Creche",
+    "02": "Pré-escola (maternal/jardim de infância)",
+    "03": "Classe de alfabetização (CA)",
+    "04": "Alfabetização de jovens e adultos",
+    "05": "Antigo primário (elementar)",
+    "06": "Antigo ginásio (médio 1º ciclo)",
+    "07": "Fundamental regular (1º grau)",
+    "08": "EJA / supletivo do Fundamental",
+    "09": "Antigo científico/clássico (médio 2º ciclo)",
+    "10": "Médio regular (2º grau)",
+    "11": "EJA / supletivo do Médio",
+    "12": "Superior — graduação",
+    "13": "Especialização (pós-graduação lato sensu)",
+    "14": "Mestrado",
+    "15": "Doutorado",
 }
 
 # ─────────────────────────────────────────────────
