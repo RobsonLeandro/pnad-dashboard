@@ -216,7 +216,8 @@ html, body, [class*="css"] {
 #  CONEXÃO COM O BANCO
 # ─────────────────────────────────────────────────
 
-DB_DEFAULT = Path("dados_pnad_ce/pnad_ceara.db")
+BASE_DIR   = Path(__file__).resolve().parent
+DB_DEFAULT = BASE_DIR / "dados_pnad_ce" / "pnad_ceara.db"
 TABELA     = "pnad_ce"
 
 @st.cache_resource
@@ -595,16 +596,55 @@ INSTRUCAO_LABELS = {
 CORES_PADRAO = px.colors.qualitative.Set2
 
 
-def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str = "") -> go.Figure:
-    serie = pd.to_numeric(df[coluna], errors="coerce").dropna()
+def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str = "",
+                     por_periodo: bool = False) -> go.Figure:
+    dfx = df.copy()
+    dfx[coluna] = pd.to_numeric(dfx[coluna], errors="coerce")
     if coluna == "Renda_Total":
-        serie = serie[serie > 0]
+        dfx = dfx[dfx[coluna] > 0]
+    dfx = dfx.dropna(subset=[coluna])
 
+    # ── Modo separado por período: um histograma por Ano+Trimestre ──
+    if por_periodo and "Periodo" in dfx.columns and dfx["Periodo"].nunique() > 1:
+        periodos = sorted(dfx["Periodo"].unique())
+        n_periodos = len(periodos)
+        n_cols = min(3, n_periodos)
+
+        fig = px.histogram(
+            dfx,
+            x=coluna,
+            facet_col="Periodo",
+            facet_col_wrap=n_cols,
+            category_orders={"Periodo": periodos},
+            nbins=30,
+            title=titulo,
+            labels={coluna: prefixo_x or coluna, "count": "Frequência"},
+            color_discrete_sequence=["#2E6DA4"],
+            opacity=0.85,
+        )
+        # Limpa os títulos de cada subplot (ex.: "Periodo=2023 T1" -> "2023 T1")
+        fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1], font_size=11))
+        fig.update_yaxes(matches=None, showticklabels=True, gridcolor="#F0F0F0")
+        fig.update_xaxes(showgrid=False)
+        fig.update_layout(
+            plot_bgcolor="#FFFFFF",
+            paper_bgcolor="#FFFFFF",
+            font_family="IBM Plex Sans",
+            title_font_size=13,
+            showlegend=False,
+            bargap=0.08,
+            margin=dict(t=60, b=40, l=40, r=20),
+            height=260 * ((n_periodos - 1) // n_cols + 1),
+        )
+        return fig
+
+    # ── Modo agregado (todos os períodos juntos) ──
     fig = px.histogram(
-        serie,
+        dfx,
+        x=coluna,
         nbins=40,
         title=titulo,
-        labels={"value": prefixo_x or coluna, "count": "Frequência"},
+        labels={coluna: prefixo_x or coluna, "count": "Frequência"},
         color_discrete_sequence=["#2E6DA4"],
         opacity=0.85,
     )
@@ -623,12 +663,62 @@ def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str =
 
 
 def graf_barras_categorico(df: pd.DataFrame, coluna: str, titulo: str,
-                            mapa_labels: dict = None, top_n: int = 15) -> go.Figure:
-    serie = df[coluna].dropna().astype(str).str.strip()
+                            mapa_labels: dict = None, top_n: int = 15,
+                            por_periodo: bool = False) -> go.Figure:
+    dfx = df[[coluna] + (["Periodo"] if "Periodo" in df.columns else [])].copy()
+    dfx[coluna] = dfx[coluna].astype(str).str.strip()
+    dfx = dfx.dropna(subset=[coluna])
     if mapa_labels:
-        serie = serie.map(mapa_labels).fillna(serie)
+        dfx[coluna] = dfx[coluna].map(mapa_labels).fillna(dfx[coluna])
 
-    contagem = serie.value_counts().head(top_n).reset_index()
+    # ── Modo separado por período: barras agrupadas, cor = período ──
+    if por_periodo and "Periodo" in dfx.columns and dfx["Periodo"].nunique() > 1:
+        contagem = dfx.groupby(["Periodo", coluna]).size().reset_index(name="N")
+
+        # mantém apenas as top_n categorias mais frequentes no total
+        top_cats = (
+            contagem.groupby(coluna)["N"].sum()
+            .sort_values(ascending=False)
+            .head(top_n)
+            .index
+        )
+        contagem = contagem[contagem[coluna].isin(top_cats)]
+
+        # ordena categorias pelo total geral (maior primeiro)
+        ordem_cat = (
+            contagem.groupby(coluna)["N"].sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        periodos = sorted(contagem["Periodo"].unique())
+
+        fig = px.bar(
+            contagem,
+            x="N",
+            y=coluna,
+            color="Periodo",
+            orientation="h",
+            barmode="group",
+            title=titulo,
+            labels={"N": "Quantidade", coluna: ""},
+            category_orders={coluna: ordem_cat, "Periodo": periodos},
+            color_discrete_sequence=CORES_PADRAO,
+        )
+        fig.update_layout(
+            plot_bgcolor="#FFFFFF",
+            paper_bgcolor="#FFFFFF",
+            font_family="IBM Plex Sans",
+            title_font_size=13,
+            yaxis=dict(autorange="reversed"),
+            xaxis=dict(gridcolor="#F0F0F0"),
+            margin=dict(t=50, b=40, l=180, r=20),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, title=""),
+            height=max(400, 40 * len(ordem_cat) + 120),
+        )
+        return fig
+
+    # ── Modo agregado (todos os períodos juntos) ──
+    contagem = dfx[coluna].value_counts().head(top_n).reset_index()
     contagem.columns = ["Categoria", "N"]
 
     fig = px.bar(
@@ -848,7 +938,15 @@ with st.sidebar:
     con = conectar(db_path)
 
     if con is None:
-        st.error(f"Banco não encontrado:\n{db_path}")
+        caminho_absoluto = Path(db_path).resolve()
+        st.error(
+            f"Banco não encontrado.\n\n"
+            f"Caminho informado: `{db_path}`\n\n"
+            f"Caminho absoluto verificado: `{caminho_absoluto}`\n\n"
+            f"Rode primeiro o `pnad_ceara.py` (ele cria a pasta "
+            f"`dados_pnad_ce/` ao lado dele mesmo), ou cole aqui o caminho "
+            f"completo do arquivo `pnad_ceara.db`."
+        )
         st.stop()
 
     periodos = periodos_disponiveis(con)
@@ -1175,6 +1273,22 @@ with tab4:
         "calculadas sobre os registros filtrados na sidebar."
     )
 
+    n_periodos_ativos = df["Periodo"].nunique() if "Periodo" in df.columns else 1
+
+    col_toggle, _ = st.columns([1, 3])
+    with col_toggle:
+        por_periodo = st.checkbox(
+            "📅 Separar gráficos por período (Ano/Trimestre)",
+            value=True,
+            disabled=(n_periodos_ativos <= 1),
+            help="Mostra um painel por período em vez de agregar tudo junto. "
+                 "Selecione mais de um Ano/Trimestre na sidebar para habilitar.",
+        )
+    if n_periodos_ativos <= 1:
+        st.caption("Apenas um período selecionado na sidebar — selecione mais anos/trimestres para comparar.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # ── 1. Histograma da Renda Total ─────────────
     st.markdown('<div class="graf-section-title">Histograma — Renda Total (renda_total)</div>', unsafe_allow_html=True)
 
@@ -1184,7 +1298,10 @@ with tab4:
     if renda_valida.empty:
         st.caption("Sem dados de renda total para os filtros selecionados.")
     else:
-        fig_h_renda = graf_histograma(df, "Renda_Total", "Distribuição da Renda Total (R$)", "Renda Total (R$)")
+        fig_h_renda = graf_histograma(
+            df, "Renda_Total", "Distribuição da Renda Total (R$)", "Renda Total (R$)",
+            por_periodo=por_periodo,
+        )
         st.plotly_chart(fig_h_renda, use_container_width=True)
         st.markdown(
             f'<div class="insight-box">💡 {insight_renda(df)}</div>',
@@ -1201,7 +1318,10 @@ with tab4:
     if idade_valida.empty:
         st.caption("Sem dados de idade para os filtros selecionados.")
     else:
-        fig_h_idade = graf_histograma(df, "Idade", "Distribuição da Idade (anos)", "Idade (anos)")
+        fig_h_idade = graf_histograma(
+            df, "Idade", "Distribuição da Idade (anos)", "Idade (anos)",
+            por_periodo=por_periodo,
+        )
         st.plotly_chart(fig_h_idade, use_container_width=True)
         st.markdown(
             f'<div class="insight-box">💡 {insight_idade(df)}</div>',
@@ -1221,6 +1341,7 @@ with tab4:
             df, col_instr,
             "Distribuição por Nível de Instrução (V3009A)",
             mapa_labels=INSTRUCAO_LABELS,
+            por_periodo=por_periodo,
         )
         st.plotly_chart(fig_instr, use_container_width=True)
         txt = insight_instrucao(df)
@@ -1240,6 +1361,7 @@ with tab4:
             df, col_cnae,
             "Distribuição por Seção CNAE (setor econômico)",
             mapa_labels=CNAE_SECOES,
+            por_periodo=por_periodo,
         )
         st.plotly_chart(fig_cnae, use_container_width=True)
         txt = insight_cnae(df)
