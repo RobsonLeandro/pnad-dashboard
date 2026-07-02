@@ -597,12 +597,40 @@ CORES_PADRAO = px.colors.qualitative.Set2
 
 
 def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str = "",
-                     por_periodo: bool = False) -> go.Figure:
+                     por_periodo: bool = False, bin_size: float = None,
+                     corte_percentil: float = 99) -> go.Figure:
     dfx = df.copy()
     dfx[coluna] = pd.to_numeric(dfx[coluna], errors="coerce")
     if coluna == "Renda_Total":
         dfx = dfx[dfx[coluna] > 0]
     dfx = dfx.dropna(subset=[coluna])
+
+    # ── Corta a cauda de valores extremos apenas para a VISUALIZAÇÃO ──
+    # (os cálculos de média/mediana/etc. em outras partes do app usam os
+    # dados completos — aqui só limitamos o eixo para o histograma não
+    # virar "uma barra gigante + nada" por causa de poucos outliers.)
+    limite_superior = None
+    n_cortados = 0
+    if len(dfx) > 0 and corte_percentil is not None:
+        limite_superior = dfx[coluna].quantile(corte_percentil / 100)
+        n_cortados = int((dfx[coluna] > limite_superior).sum())
+        dfx = dfx[dfx[coluna] <= limite_superior]
+
+    # ── Define o tamanho do bin (intervalo) ──
+    if bin_size is None:
+        # fallback: ~30 bins ao longo do intervalo visível
+        amplitude = dfx[coluna].max() - dfx[coluna].min() if len(dfx) else 1
+        bin_size = max(amplitude / 30, 1)
+
+    xbins = dict(start=0, size=bin_size)
+
+    aviso = ""
+    if n_cortados > 0:
+        aviso = (
+            f' <span style="font-size:10px;color:#999;">'
+            f'({n_cortados} valor(es) acima de {limite_superior:,.0f} '
+            f'ocultado(s) do gráfico p/ melhor leitura)</span>'
+        ).replace(",", ".")
 
     # ── Modo separado por período: um histograma por Ano+Trimestre ──
     if por_periodo and "Periodo" in dfx.columns and dfx["Periodo"].nunique() > 1:
@@ -616,16 +644,16 @@ def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str =
             facet_col="Periodo",
             facet_col_wrap=n_cols,
             category_orders={"Periodo": periodos},
-            nbins=30,
-            title=titulo,
+            title=titulo + aviso,
             labels={coluna: prefixo_x or coluna, "count": "Frequência"},
             color_discrete_sequence=["#2E6DA4"],
             opacity=0.85,
         )
+        fig.update_traces(xbins=xbins)
         # Limpa os títulos de cada subplot (ex.: "Periodo=2023 T1" -> "2023 T1")
         fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1], font_size=11))
         fig.update_yaxes(matches=None, showticklabels=True, gridcolor="#F0F0F0")
-        fig.update_xaxes(showgrid=False)
+        fig.update_xaxes(showgrid=False, range=[0, limite_superior] if limite_superior else None)
         fig.update_layout(
             plot_bgcolor="#FFFFFF",
             paper_bgcolor="#FFFFFF",
@@ -642,12 +670,12 @@ def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str =
     fig = px.histogram(
         dfx,
         x=coluna,
-        nbins=40,
-        title=titulo,
+        title=titulo + aviso,
         labels={coluna: prefixo_x or coluna, "count": "Frequência"},
         color_discrete_sequence=["#2E6DA4"],
         opacity=0.85,
     )
+    fig.update_traces(xbins=xbins)
     fig.update_layout(
         plot_bgcolor="#FFFFFF",
         paper_bgcolor="#FFFFFF",
@@ -655,7 +683,7 @@ def graf_histograma(df: pd.DataFrame, coluna: str, titulo: str, prefixo_x: str =
         title_font_size=13,
         showlegend=False,
         bargap=0.05,
-        xaxis=dict(showgrid=False),
+        xaxis=dict(showgrid=False, range=[0, limite_superior] if limite_superior else None),
         yaxis=dict(gridcolor="#F0F0F0"),
         margin=dict(t=50, b=40, l=40, r=20),
     )
@@ -1300,7 +1328,7 @@ with tab4:
     else:
         fig_h_renda = graf_histograma(
             df, "Renda_Total", "Distribuição da Renda Total (R$)", "Renda Total (R$)",
-            por_periodo=por_periodo,
+            por_periodo=por_periodo, bin_size=2000, corte_percentil=99,
         )
         st.plotly_chart(fig_h_renda, use_container_width=True)
         st.markdown(
@@ -1320,7 +1348,7 @@ with tab4:
     else:
         fig_h_idade = graf_histograma(
             df, "Idade", "Distribuição da Idade (anos)", "Idade (anos)",
-            por_periodo=por_periodo,
+            por_periodo=por_periodo, bin_size=5, corte_percentil=100,
         )
         st.plotly_chart(fig_h_idade, use_container_width=True)
         st.markdown(
